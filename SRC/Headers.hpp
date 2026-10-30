@@ -21,6 +21,8 @@
 #include <uhd/utils/msg.hpp>
 */
 
+//lisätty kirjasto
+#include <queue>
 
 #include <math.h>
 #include <signal.h>

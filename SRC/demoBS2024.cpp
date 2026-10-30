@@ -33,6 +33,30 @@ void os_signal_handler(int s){
   STOP_SIGNAL_CALLED.store(true);
 }
 
+// Holds terminal messages until the radio loop is ready to transmit them.
+struct InputQueue {
+  std::queue<std::string> messages;
+  std::mutex mutex;
+
+  // Protect the queue because this is called by the input thread.
+  void push(std::string message){
+    std::lock_guard<std::mutex> lock(mutex);
+    messages.push(std::move(message));
+  }
+  // Non-blocking read used by the main radio loop.
+  bool tryPop(std::string& message) {
+        std::lock_guard<std::mutex> lock(mutex);
+
+        if (messages.empty()) {
+            return false;
+        }
+
+        message = std::move(messages.front());
+        messages.pop();
+        return true;
+    }
+};
+
 /**************************************************************
 	Main
 **************************************************************/
@@ -41,6 +65,18 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
   int retVal = EXIT_SUCCESS;
 
   std::signal(SIGINT, os_signal_handler);
+
+  // Read terminal input independently so the radio loop never blocks on std::cin.
+  auto inputQueue = std::make_shared<InputQueue>();
+  auto input_finished = std::make_shared<std::atomic<bool>>(false);
+  std::thread inputThread([inputQueue, input_finished](){
+    std::string line;
+    while (!STOP_SIGNAL_CALLED.load() && std::getline(std::cin, line)) {
+      // Only collect input here; packet construction remains in the radio loop.
+      inputQueue->push(std::move(line));
+    }
+    input_finished->store(true);
+  });
 
   int ue_tx_slot = 10;
   int txrx_chain_delay = 95;
@@ -135,6 +171,8 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
   uint64_t tx_count = 0;
   int waitForTx=20;
 
+  //input message from the terminal
+  std::cout << "Input new message:" << std::endl;
 
 bool handshake_done = false;
 
@@ -202,27 +240,20 @@ while(true){
     
     if(ack_received && !(waitForTx%100))
     {
-
-      if (STOP_SIGNAL_CALLED.load()) break;
-      std::cout << "************** Rx end ********************" << std::endl << std::endl << std::endl << std::endl << std::endl;
-      std::cout << "************** Tx ************************" << std::endl << std::endl;
-      std::cout << "Input new message:" << std::endl << std::endl;
-
-      char c_message[105];
-      std::cin.get(c_message, 105);
-      std::cin.clear();
-      std::cin.ignore(100000, '\n');
-
-      if (STOP_SIGNAL_CALLED.load()) break;
-      message = std::string(c_message);
-
-      ack_received = false;
-      my_turn_to_transmit = true;
-
-
-  
-      if (my_turn_to_transmit)
+      std::string new_message;
+      if (inputQueue->tryPop(new_message))
       {
+        // A message is sent only after it has been entered by the user (non blocking)
+        if (STOP_SIGNAL_CALLED.load()) break;
+        std::cout << "************** Rx end ********************" << std::endl << std::endl << std::endl << std::endl << std::endl;
+        std::cout << "************** Tx ************************" << std::endl << std::endl;
+        message = std::move(new_message);
+
+        ack_received = false;
+        my_turn_to_transmit = true;
+
+        if (my_turn_to_transmit)
+        {
           //================== Build the packet ==================
           std::vector<uint8_t> msg_bytes;
           msg_bytes.push_back(0x0F);                              // Header
@@ -256,6 +287,9 @@ while(true){
           tx_ready = false;
           my_turn_to_transmit = false;
           packet_no++;
+
+          std::cout << "Input new message:" << std::endl;
+        }
       }
  
       
@@ -325,6 +359,18 @@ while(true){
   phyBS.stopProcessing();
   
   delete testData;
+
+  if (inputThread.joinable())
+  {
+    if (input_finished->load())
+    {
+      inputThread.join();
+    }
+    else
+    {
+      inputThread.detach();
+    }
+  }
   
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
  
