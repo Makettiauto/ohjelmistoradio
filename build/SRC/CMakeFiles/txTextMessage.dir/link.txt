@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/txTextMessage.dir/demoBS2024.cpp.o CMakeFiles/txTextMessage.dir/Logger.cpp.o -o /home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/txTextMessage  -lfmt -lfftw3f -lfftw3 -luhd -lboost_system -lboost_program_options -lpthread libdemo_lib.a 

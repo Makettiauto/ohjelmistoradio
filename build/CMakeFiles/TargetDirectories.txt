@@ -1,0 +1,7 @@
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/CMakeFiles/edit_cache.dir
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/CMakeFiles/rebuild_cache.dir
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/SRC/CMakeFiles/rxTextMessage.dir
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/SRC/CMakeFiles/txTextMessage.dir
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/SRC/CMakeFiles/demo_lib.dir
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/SRC/CMakeFiles/edit_cache.dir
+/home/kru/Courses/ELEC_C7320/Git/elec-c7320/projekti_2025/build/SRC/CMakeFiles/rebuild_cache.dir
