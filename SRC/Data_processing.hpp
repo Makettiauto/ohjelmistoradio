@@ -3,9 +3,16 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+#include <optional>
+#include <algorithm>
 
 
 typedef unsigned char Byte;
+
+constexpr size_t PKT_HEADER_SIZE  = 6;
+constexpr size_t PKT_PAYLOAD_SIZE = 100;
+constexpr size_t PKT_CRC_SIZE     = 2;
+constexpr size_t PKT_TOTAL_BYTES  = 108;
 
 const uint32_t CRC_TABLE_16[256] =
 {
@@ -268,4 +275,72 @@ std::string formatBinaryVector(const std::vector<int>& rx_bin_data) {
         oss << rx_bin_data[i] << " ";
     }
     return oss.str();
+}
+
+
+
+enum PacketType : uint8_t {
+    PKT_DATA = 0x00,
+    PKT_ACK  = 0x06,
+    PKT_HELLO = 0x01,
+    PKT_HELLO_ACK = 0x02
+};
+
+struct ParsedPacket {
+    PacketType type = PKT_DATA;
+    uint32_t seq_num = 0;
+    std::string text = "";
+
+    static std::optional<ParsedPacket> parse_packet(const std::vector<Byte>& msg) {
+        if (msg.size() < 8 || check_crc(msg) != 0) {
+            return std::nullopt;
+        }
+
+        ParsedPacket p;
+        p.type = static_cast<PacketType>(msg[0]);
+        p.seq_num = (msg[2] << 24) | (msg[3] << 16) | (msg[4] << 8) | msg[5];
+
+        size_t len = std::min<size_t>(msg[1], msg.size() - 8);
+        p.text.assign(msg.begin() + 6, msg.begin() + 6 + len);
+
+        return p;
+    }
+};
+
+
+inline std::vector<int> build_packet_bits(PacketType type, uint32_t seq_num, const std::string& text = "") {
+    std::vector<uint8_t> bytes;
+    bytes.reserve(PKT_TOTAL_BYTES);
+
+    bytes.push_back(static_cast<uint8_t>(type));
+    uint8_t text_len = static_cast<uint8_t>(std::min(text.size(), PKT_PAYLOAD_SIZE));
+    bytes.push_back(text_len);
+
+    bytes.push_back((seq_num >> 24) & 0xFF);
+    bytes.push_back((seq_num >> 16) & 0xFF);
+    bytes.push_back((seq_num >> 8)  & 0xFF);
+    bytes.push_back( seq_num        & 0xFF);
+
+    for (size_t i = 0; i < PKT_PAYLOAD_SIZE; ++i) {
+        bytes.push_back(i < text_len ? static_cast<uint8_t>(text[i]) : 0x00);
+    }
+
+    std::vector<Byte> with_crc = attach_crc(bytes);
+    return bytes_to_bits(with_crc);
+}
+
+inline std::vector<int> create_data_packet(uint32_t seq_num, const std::string& text) {
+    return build_packet_bits(PKT_DATA, seq_num, text);
+}
+
+inline std::vector<int> create_ack_packet(uint32_t seq_num) {
+    return build_packet_bits(PKT_ACK, seq_num, "");
+}
+
+inline std::vector<int> create_hello_packet() {
+    return build_packet_bits(PKT_HELLO, 0, "HELLO");
+}
+
+inline std::vector<int> create_hello_ack_packet() {
+    return build_packet_bits(PKT_HELLO_ACK, 0, "HELLO_ACK");
 }
