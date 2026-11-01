@@ -37,6 +37,34 @@ void os_signal_handler(int s)
   STOP_SIGNAL_CALLED.store(true);
 }
 
+// Holds terminal messages until the radio loop is ready to transmit them.
+struct InputQueue
+{
+  std::queue<std::string> messages;
+  std::mutex mutex;
+
+  // Protect the queue because this is called by the input thread.
+  void push(std::string message)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    messages.push(std::move(message));
+  }
+  // Non-blocking read used by the main radio loop.
+  bool tryPop(std::string &message)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (messages.empty())
+    {
+      return false;
+    }
+
+    message = std::move(messages.front());
+    messages.pop();
+    return true;
+  }
+};
+
 /**************************************************************
   Main
 **************************************************************/
@@ -45,6 +73,18 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
   int retVal = EXIT_SUCCESS;
 
   std::signal(SIGINT, os_signal_handler);
+
+  // Read terminal input independently so the radio loop never blocks on std::cin.
+  auto inputQueue = std::make_shared<InputQueue>();
+  auto input_finished = std::make_shared<std::atomic<bool>>(false);
+  std::thread inputThread([inputQueue, input_finished]()
+                          {
+    std::string line;
+    while (!STOP_SIGNAL_CALLED.load() && std::getline(std::cin, line)) {
+      // Only collect input here; packet construction remains in the radio loop.
+      inputQueue->push(std::move(line));
+    }
+    input_finished->store(true); });
 
   int ue_tx_slot = 10;
   int txrx_chain_delay = 95;
@@ -143,6 +183,8 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
   int waitForTx = 20;
 
   bool handshake_done = false;
+  // input message from the terminal
+  std::cout << "Input new message:" << std::endl;
 
   while (!handshake_done && !STOP_SIGNAL_CALLED.load())
   {
@@ -261,6 +303,8 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
           std::cout << "[BS Error] Max retries reached for seq " << packet_no << ". Giving up on packet." << std::endl;
           waiting_for_ack = false;
           packet_no++;
+
+          std::cout << "Input new message:" << std::endl;
         }
       }
     }
@@ -348,6 +392,18 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
   phyBS.stopProcessing();
 
   delete testData;
+
+  if (inputThread.joinable())
+  {
+    if (input_finished->load())
+    {
+      inputThread.join();
+    }
+    else
+    {
+      inputThread.detach();
+    }
+  }
 
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
