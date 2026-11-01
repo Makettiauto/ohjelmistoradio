@@ -55,14 +55,46 @@ void os_signal_handler(int s)
   STOP_SIGNAL_CALLED.store(true);
 }
 
+struct InputQueue
+{
+  std::queue<std::string> messages;
+  std::mutex mutex;
+
+  void push(std::string message)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    messages.push(std::move(message));
+  }
+  bool tryPop(std::string &message)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (messages.empty())
+      return false;
+    message = std::move(messages.front());
+    messages.pop();
+    return true;
+  }
+};
+
 /**************************************************************
   Main
 **************************************************************/
 int UHD_SAFE_MAIN(int argc, char *argv[])
 {
   int retVal = EXIT_SUCCESS;
-
   std::signal(SIGINT, os_signal_handler);
+
+  // Read terminal input independently so the radio loop never blocks on std::cin.
+  auto inputQueue = std::make_shared<InputQueue>();
+  auto input_finished = std::make_shared<std::atomic<bool>>(false);
+  std::thread inputThread([inputQueue, input_finished]()
+                          {
+    std::string line;
+    while (!STOP_SIGNAL_CALLED.load() && std::getline(std::cin, line)) {
+      // Only collect input here; packet construction remains in the radio loop.
+      inputQueue->push(std::move(line));
+    }
+    input_finished->store(true); });
 
   Logger::initialize();
 
@@ -223,47 +255,29 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
     //********************************************************************
     if (my_turn_to_transmit && !waiting_for_ack && !(waitForTx % 100))
     {
+      std::string input_text;
+      if (inputQueue->tryPop(input_text))
+      {
 
-      if (STOP_SIGNAL_CALLED.load())
-        break;
-      ;
-      std::cout << "************** Rx end ********************" << std::endl
-                << std::endl
-                << std::endl
-                << std::endl
-                << std::endl;
-      std::cout << "************** Tx ************************" << std::endl
-                << std::endl;
-      std::cout << "Input new message:" << std::endl
-                << std::endl;
+        message = input_text;
+        pending_tx_bits = create_data_packet(packet_no, message);
 
-      char c_message[105];
-      std::cin.get(c_message, 105);
-      std::cin.clear();
-      std::cin.ignore(100000, '\n');
+        auto txItem = std::make_unique<TXitem>();
+        txItem->insertData(pending_tx_bits);
+        txItem->tx_meta_data.num_tx_symbols = 6; // adjust if needed
+        txQueue.writeItem(std::move(txItem));
 
-      if (STOP_SIGNAL_CALLED.load())
-        break;
-      ;
-      message = std::string(c_message);
+        std::cout << "Packet (tx packet no: " << packet_no << ") sent with message:" << std::endl
+                  << message << std::endl
+                  << std::endl;
+        Logger::getLogger()->info("Packet sent (tx packet no: {}), message:\n\n{}\n", packet_no, message);
 
-      pending_tx_bits = create_data_packet(packet_no, message);
-
-      auto txItem = std::make_unique<TXitem>();
-      txItem->insertData(pending_tx_bits);
-      txItem->tx_meta_data.num_tx_symbols = 6; // adjust if needed
-      txQueue.writeItem(std::move(txItem));
-
-      std::cout << "Packet (tx packet no: " << packet_no << ") sent with message:" << std::endl
-                << message << std::endl
-                << std::endl;
-      Logger::getLogger()->info("Packet sent (tx packet no: {}), message:\n\n{}\n", packet_no, message);
-
-      // Reset state
-      waiting_for_ack = true;
-      my_turn_to_transmit = false;
-      last_tx_time = std::chrono::steady_clock::now();
-      retry_count = 0;
+        // Reset state
+        waiting_for_ack = true;
+        my_turn_to_transmit = false;
+        last_tx_time = std::chrono::steady_clock::now();
+        retry_count = 0;
+      }
     }
 
     // Restransmition logic
@@ -290,6 +304,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
           std::cout << "[UE Error] Max retries reached for seq " << packet_no << ". Giving up on packet." << std::endl;
           waiting_for_ack = false;
           packet_no++;
+          my_turn_to_transmit = true;
         }
       }
     }
@@ -356,6 +371,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
 
               // Hand over the turn so this terminal can reply
               my_turn_to_transmit = true;
+              std::cout << "[Your turn] Enter message:\n> " << std::flush;
             }
           }
         }
@@ -375,6 +391,20 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
 
   // send stop to the phy thread
   phyUE.stopProcessing();
+
+  delete testData;
+
+  if (inputThread.joinable())
+  {
+    if (input_finished->load())
+    {
+      inputThread.join();
+    }
+    else
+    {
+      inputThread.detach();
+    }
+  }
 
   std::this_thread::sleep_for(std::chrono::nanoseconds(100)); // placeholder for processing
 

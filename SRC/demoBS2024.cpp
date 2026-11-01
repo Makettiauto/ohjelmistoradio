@@ -241,42 +241,30 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
 
       if (STOP_SIGNAL_CALLED.load())
         break;
-      std::cout << "************** Rx end ********************" << std::endl
-                << std::endl
-                << std::endl
-                << std::endl
-                << std::endl;
-      std::cout << "************** Tx ************************" << std::endl
-                << std::endl;
-      std::cout << "Input new message:" << std::endl
-                << std::endl;
 
-      char c_message[105];
-      std::cin.get(c_message, 105);
-      std::cin.clear();
-      std::cin.ignore(100000, '\n');
+      std::string input_text;
+      if (inputQueue->tryPop(input_text))
+      {
+        message = input_text;
 
-      if (STOP_SIGNAL_CALLED.load())
-        break;
-      message = std::string(c_message);
+        pending_tx_bits = create_data_packet(packet_no, message);
 
-      pending_tx_bits = create_data_packet(packet_no, message);
+        //================== Send the packet ==================
+        auto txItem = std::make_unique<TXitem>();
+        txItem->insertData(pending_tx_bits);
+        txItem->tx_meta_data.num_tx_symbols = 6; // adjust if needed
+        txQueue.writeItem(std::move(txItem));
 
-      //================== Send the packet ==================
-      auto txItem = std::make_unique<TXitem>();
-      txItem->insertData(pending_tx_bits);
-      txItem->tx_meta_data.num_tx_symbols = 6; // adjust if needed
-      txQueue.writeItem(std::move(txItem));
+        std::cout << "Packet (tx packet no: " << packet_no << ") sent with message:" << std::endl
+                  << message << std::endl
+                  << std::endl;
 
-      std::cout << "Packet (tx packet no: " << packet_no << ") sent with message:" << std::endl
-                << message << std::endl
-                << std::endl;
-
-      // Reset state
-      waiting_for_ack = true;
-      my_turn_to_transmit = false;
-      last_tx_time = std::chrono::steady_clock::now();
-      retry_count = 0;
+        // Reset state
+        waiting_for_ack = true;
+        my_turn_to_transmit = false;
+        last_tx_time = std::chrono::steady_clock::now();
+        retry_count = 0;
+      }
     }
 
     // Restransmition logic
@@ -303,7 +291,7 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
           std::cout << "[BS Error] Max retries reached for seq " << packet_no << ". Giving up on packet." << std::endl;
           waiting_for_ack = false;
           packet_no++;
-
+          my_turn_to_transmit = true;
           std::cout << "Input new message:" << std::endl;
         }
       }
@@ -347,7 +335,15 @@ int UHD_SAFE_MAIN(int argc, char *argv[])
 
         if (pkt)
         {
-          if (pkt->type == PKT_ACK && waiting_for_ack && pkt->seq_num == packet_no)
+          if (pkt->type == PKT_HELLO)
+          {
+            // Resend HELLO_ACK in case UE timed out and resent HELLO
+            auto txItem = std::make_unique<TXitem>();
+            txItem->insertData(create_hello_ack_packet());
+            txItem->tx_meta_data.num_tx_symbols = 6;
+            txQueue.writeItem(std::move(txItem));
+          }
+          else if (pkt->type == PKT_ACK && waiting_for_ack && pkt->seq_num == packet_no)
           {
             std::cout << "ACK received from UE for seq: " << pkt->seq_num << std::endl;
             waiting_for_ack = false;
